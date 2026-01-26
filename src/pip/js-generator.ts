@@ -175,6 +175,14 @@ function generateJSResourceClass(cls: PipClass, jcoClassName: string): string {
 }
 
 /**
+ * Check if a module is a main (top-level) module, not a submodule
+ * For WASM compatibility, we only process main modules
+ */
+function isMainModule(module: PipModule): boolean {
+  return !module.name.includes('.');
+}
+
+/**
  * Generate the runtime wrapper that provides a nice API
  */
 function generateRuntimeWrapper(schema: PipTypeSchema): string {
@@ -191,8 +199,11 @@ function generateRuntimeWrapper(schema: PipTypeSchema): string {
   // Collect resource classes to export
   const resourceClasses: string[] = [];
 
-  // Generate wrapper code for each module
-  for (const module of schema.modules) {
+  // For WASM compatibility, only process main modules (no submodules)
+  const mainModules = schema.modules.filter(isMainModule);
+
+  // Generate wrapper code for each main module
+  for (const module of mainModules) {
     // Collect resource classes from this module
     if (hasExportableClasses(module)) {
       const interfaceName = module.name.replace(/\./g, '-').toLowerCase() + '-api';
@@ -305,9 +316,9 @@ export function ${jsName}(${params}) {
     const jcoImports = resourceClasses.map(c => `${c}: _${c}`).join(', ');
     jcoClassImports = `const { ${jcoImports} } = ${apiNamespace};\n`;
 
-    // Generate wrapper classes for each resource
+    // Generate wrapper classes for each resource (main modules only)
     const wrapperClasses: string[] = [];
-    for (const module of schema.modules) {
+    for (const module of mainModules) {
       if (hasExportableClasses(module)) {
         for (const cls of getExportableClasses(module)) {
           const resourceName = cls.name.toLowerCase().replace(/_/g, '-');

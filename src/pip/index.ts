@@ -3,7 +3,7 @@
  * Coordinates the pipeline: install → extract types → generate WIT → compile → generate JS/TS
  */
 
-import { join } from 'path';
+import { join, basename } from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import { logger } from '../utils/logger.js';
 import { ensureDirectory, getPipModulesDirectory, writeFileContent } from '../utils/file-utils.js';
@@ -81,15 +81,11 @@ async function pipInstallPyodide(
     join(outputDir, 'package.json')
   ];
 
-  // Add pyodide to user's package.json
-  const addedDeps = await addDependenciesToPackageJson({ 'pyodide': '^0.27.0' });
+  // Add and install pyodide dependency
+  await addAndInstallDependencies({ 'pyodide': '^0.27.0' });
 
   logger.info(`\nUsage:`);
   logger.info(`  import { ... } from './umo_modules/${resolvedPackage.name}/index.js';`);
-  if (addedDeps.length > 0) {
-    logger.info(`\nAdded to package.json: ${addedDeps.join(', ')}`);
-    logger.info(`Run: npm install`);
-  }
 
   return {
     packageName: resolvedPackage.name,
@@ -137,15 +133,11 @@ async function pipInstallComponentizePy(
     join(outputDir, 'package.json')
   ];
 
-  // Add preview2-shim to user's package.json
-  const addedDeps = await addDependenciesToPackageJson({ '@bytecodealliance/preview2-shim': '^0.17.0' });
+  // Add and install preview2-shim dependency
+  await addAndInstallDependencies({ '@bytecodealliance/preview2-shim': '^0.17.0' });
 
   logger.info(`\nUsage:`);
   logger.info(`  import { ... } from './umo_modules/${resolvedPackage.name}/index.js';`);
-  if (addedDeps.length > 0) {
-    logger.info(`\nAdded to package.json: ${addedDeps.join(', ')}`);
-    logger.info(`Run: npm install`);
-  }
 
   return {
     packageName: resolvedPackage.name,
@@ -156,12 +148,59 @@ async function pipInstallComponentizePy(
 }
 
 /**
- * Add dependencies to the user's package.json if not already present.
+ * Ensure package.json exists, creating a minimal one if needed.
+ */
+async function ensurePackageJson(): Promise<void> {
+  const packageJsonPath = join(process.cwd(), 'package.json');
+
+  try {
+    await readFile(packageJsonPath, 'utf-8');
+  } catch {
+    // Create a minimal package.json
+    const minimalPkg = {
+      name: basename(process.cwd()),
+      version: '1.0.0',
+      type: 'module',
+      dependencies: {}
+    };
+    await writeFile(packageJsonPath, JSON.stringify(minimalPkg, null, 2) + '\n');
+    logger.debug(`Created package.json in ${process.cwd()}`);
+  }
+}
+
+/**
+ * Install npm dependencies using npm install.
+ */
+async function installNpmDependencies(packages: string[]): Promise<void> {
+  if (packages.length === 0) return;
+
+  const { execa } = await import('execa');
+
+  logger.startSpinner(`Installing npm dependencies: ${packages.join(', ')}...`);
+
+  try {
+    await execa('npm', ['install', ...packages], {
+      cwd: process.cwd(),
+      stdio: 'pipe'
+    });
+    logger.succeedSpinner(`Installed npm dependencies`);
+  } catch (error) {
+    logger.failSpinner(`Failed to install npm dependencies`);
+    throw error;
+  }
+}
+
+/**
+ * Add dependencies to the user's package.json and install them.
+ * Creates package.json if it doesn't exist.
  * Returns list of newly added packages.
  */
-async function addDependenciesToPackageJson(deps: Record<string, string>): Promise<string[]> {
+async function addAndInstallDependencies(deps: Record<string, string>): Promise<string[]> {
   const packageJsonPath = join(process.cwd(), 'package.json');
-  const added: string[] = [];
+  const toInstall: string[] = [];
+
+  // Ensure package.json exists
+  await ensurePackageJson();
 
   try {
     const content = await readFile(packageJsonPath, 'utf-8');
@@ -173,19 +212,19 @@ async function addDependenciesToPackageJson(deps: Record<string, string>): Promi
 
     for (const [name, version] of Object.entries(deps)) {
       if (!pkg.dependencies[name]) {
-        pkg.dependencies[name] = version;
-        added.push(name);
+        toInstall.push(`${name}@${version.replace('^', '')}`);
       }
     }
 
-    if (added.length > 0) {
-      await writeFile(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
+    // Install missing dependencies
+    if (toInstall.length > 0) {
+      await installNpmDependencies(toInstall);
     }
-  } catch {
-    // No package.json or can't read it - skip
+  } catch (error) {
+    logger.warn(`Could not manage dependencies: ${error instanceof Error ? error.message : 'unknown error'}`);
   }
 
-  return added;
+  return toInstall;
 }
 
 /**

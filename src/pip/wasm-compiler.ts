@@ -3,13 +3,14 @@
  * Uses componentize-py to compile Python packages to WASM components.
  */
 
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { logger } from '../utils/logger.js';
 import { getBuildDirectory, ensureDirectory, writeFileContent } from '../utils/file-utils.js';
 import { executeCompiler, checkToolAvailable } from '../compiler/compiler-bridge.js';
 import { CompilationError } from '../utils/error-handler.js';
 import { PipTypeSchema, PipModule, PipFunction, PipType, PipClass } from './type-schema.js';
 import { ResolvedPackage } from './package-resolver.js';
+import { getWitWorldName } from './wit-generator.js';
 
 /**
  * Convert kebab-case to snake_case for Python
@@ -156,8 +157,11 @@ function toWitMethodName(name: string): string {
 
 /**
  * Generate Python wrapper function that calls the actual package function
+ * @param func - The function to generate
+ * @param moduleName - The full module name (e.g., "humanize.time")
+ * @param mainModuleName - Optional override for the module to call (for WASM compatibility)
  */
-function generatePythonFunction(func: PipFunction, moduleName: string): string {
+function generatePythonFunction(func: PipFunction, moduleName: string, mainModuleName?: string): string {
   const params = func.params
     .map(p => `${p.name}: ${pipTypeToPython(p.type)}`)
     .join(', ');
@@ -168,6 +172,10 @@ function generatePythonFunction(func: PipFunction, moduleName: string): string {
   const methodName = toWitMethodName(func.name);
   // The original Python function name to call
   const pythonFuncName = func.name;
+
+  // For WASM compatibility, use the main module if specified
+  // This handles cases where submodule imports don't work but functions are re-exported
+  const callModule = mainModuleName || moduleName;
 
   // Build the function body with JSON parsing
   const bodyLines: string[] = [];
@@ -209,10 +217,10 @@ function generatePythonFunction(func: PipFunction, moduleName: string): string {
   const returnsDictConversion = func.returnType.kind === 'dict';
 
   if (returnsDictConversion) {
-    bodyLines.push(`        result = ${moduleName}.${pythonFuncName}(**kwargs)`);
+    bodyLines.push(`        result = ${callModule}.${pythonFuncName}(**kwargs)`);
     bodyLines.push(`        return list(result.items())`);
   } else {
-    bodyLines.push(`        return ${moduleName}.${pythonFuncName}(**kwargs)`);
+    bodyLines.push(`        return ${callModule}.${pythonFuncName}(**kwargs)`);
   }
 
   const body = bodyLines.join('\n');
@@ -434,10 +442,18 @@ function generatePythonWrapper(schema: PipTypeSchema): string {
   const imports: string[] = [];
   const classes: string[] = [];
 
-  // Collect all modules that need imports (functions or classes)
-  const modulesWithContent = schema.modules.filter(
-    m => m.functions.length > 0 || hasExportableClasses(m)
-  );
+  // For WASM compatibility, only use the main (top-level) module
+  // Submodule imports don't work in componentize-py's WASM environment
+  // Functions are typically re-exported at the top level anyway
+  const mainModuleName = schema.modules[0]?.name.split('.')[0] || schema.package.replace(/-/g, '_');
+
+  // Filter to only main module (no submodules) for WASM compatibility
+  const modulesWithContent = schema.modules.filter(m => {
+    // Only include top-level modules (no dots in name)
+    const isMainModule = !m.name.includes('.');
+    const hasContent = m.functions.length > 0 || hasExportableClasses(m);
+    return isMainModule && hasContent;
+  });
 
   // Import the WIT protocol classes with aliases
   // componentize-py generates PascalCase class names from kebab-case interface names
@@ -473,15 +489,23 @@ function generatePythonWrapper(schema: PipTypeSchema): string {
   }
 
   // Import the actual package modules
+  // For WASM compatibility, we only import the main module
+  // componentize-py can't handle "import package.submodule" style imports
+  const importedModules = new Set<string>();
+
   for (const module of modulesWithContent) {
-    imports.push(`import ${module.name}`);
+    if (!importedModules.has(module.name)) {
+      imports.push(`import ${module.name}`);
+      importedModules.add(module.name);
+    }
   }
   imports.push('import json  # For serializing method results');
   imports.push('');
 
   // Generate wrapper classes for functions
   // The class names must match the Protocol class names for componentize-py
-  for (const module of schema.modules) {
+  // Only process main modules (no submodules) for WASM compatibility
+  for (const module of modulesWithContent) {
     if (module.functions.length > 0) {
       // Protocol class name from componentize-py (e.g., PydashFunctionsApi)
       // Must match WIT interface name: convert dots and underscores to hyphens
@@ -499,9 +523,9 @@ function generatePythonWrapper(schema: PipTypeSchema): string {
           const kebabName = toKebabCase(f.name);
           if (classNames.has(kebabName)) {
             // Rename function to avoid collision, matching WIT generator
-            return generatePythonFunction({ ...f, name: f.name + '_fn' }, module.name);
+            return generatePythonFunction({ ...f, name: f.name + '_fn' }, module.name, mainModuleName);
           }
-          return generatePythonFunction(f, module.name);
+          return generatePythonFunction(f, module.name, mainModuleName);
         })
         .join('\n');
 
@@ -638,16 +662,34 @@ export async function compilePipToWasm(
     // Ignore if doesn't exist
   }
 
+  // Resolve all paths to absolute paths to avoid any cwd issues
+  const resolvedWitDir = resolve(witDir);
+  const resolvedBindingsDir = resolve(bindingsDir);
+  const resolvedBuildDir = resolve(buildDir);
+  // Use prefixed world name to avoid conflicts with actual Python package
+  const worldName = getWitWorldName(pkg.importName);
+
+  logger.debug(`WIT directory: ${resolvedWitDir}`);
+  logger.debug(`Bindings directory: ${resolvedBindingsDir}`);
+  logger.debug(`Build directory: ${resolvedBuildDir}`);
+  logger.debug(`World name: ${worldName}`);
+
   const bindingsResult = await executeCompiler(
     'componentize-py',
     [
-      '-d', witDir,
-      '-w', toKebabCase(pkg.importName),  // World name must be kebab-case
+      '-d', resolvedWitDir,
+      '-w', worldName,
       'bindings',
-      bindingsDir
+      '--world-module', 'wit_world',  // Force module name to wit_world for wrapper compatibility
+      resolvedBindingsDir
     ],
-    'componentize-py bindings'
+    'componentize-py bindings',
+    resolvedBuildDir  // Use explicit cwd for consistency
   );
+
+  // Log bindings command output for debugging
+  logger.debug(`Bindings stdout: ${bindingsResult.stdout || '(empty)'}`);
+  logger.debug(`Bindings stderr: ${bindingsResult.stderr || '(empty)'}`);
 
   if (!bindingsResult.success) {
     throw new CompilationError(
@@ -656,23 +698,68 @@ export async function compilePipToWasm(
     );
   }
 
+  // Check what was actually created in the bindings directory
+  const { stat, readdir } = await import('fs/promises');
+  try {
+    const contents = await readdir(resolvedBindingsDir);
+    logger.debug(`Bindings directory contents: ${contents.join(', ') || '(empty)'}`);
+  } catch {
+    logger.debug(`Bindings directory does not exist or is not readable`);
+  }
+
+  // Verify that wit_world was actually created
+  const witWorldDir = join(resolvedBindingsDir, 'wit_world');
+  try {
+    const stats = await stat(witWorldDir);
+    if (!stats.isDirectory()) {
+      throw new CompilationError(
+        `Bindings generation failed for ${pkg.name}`,
+        `Expected directory at ${witWorldDir} but found a file`
+      );
+    }
+    logger.debug(`Verified wit_world exists at: ${witWorldDir}`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // List the WIT directory contents for debugging
+      try {
+        const witContents = await readdir(resolvedWitDir);
+        logger.debug(`WIT directory contents: ${witContents.join(', ')}`);
+      } catch {
+        logger.debug(`WIT directory not readable`);
+      }
+
+      throw new CompilationError(
+        `Bindings generation failed for ${pkg.name}`,
+        `wit_world directory was not created at ${witWorldDir}. ` +
+        `Bindings command output: ${bindingsResult.stdout || bindingsResult.stderr || 'none'}. ` +
+        `This may indicate a componentize-py version incompatibility. ` +
+        `Try updating componentize-py: pip install --upgrade componentize-py`
+      );
+    }
+    throw err;
+  }
+
   // Step 2: Compile to WASM
-  const wasmPath = join(buildDir, `${pkg.name}.wasm`);
+  const wasmPath = join(resolvedBuildDir, `${pkg.name}.wasm`);
+  const resolvedSitePackages = resolve(pkg.sitePackagesPath);
+
+  logger.debug(`Site packages: ${resolvedSitePackages}`);
+  logger.debug(`Output WASM: ${wasmPath}`);
 
   const compileResult = await executeCompiler(
     'componentize-py',
     [
-      '-d', witDir,
-      '-w', toKebabCase(pkg.importName),  // World name must be kebab-case
+      '-d', resolvedWitDir,
+      '-w', worldName,
       'componentize',
-      '-p', buildDir,            // For the wrapper
-      '-p', bindingsDir,         // For the generated bindings (wit_world)
-      '-p', pkg.sitePackagesPath, // For the actual package
+      '-p', resolvedBuildDir,      // For the wrapper
+      '-p', resolvedBindingsDir,   // For the generated bindings (wit_world)
+      '-p', resolvedSitePackages,  // For the actual package
       'wrapper',
       '-o', wasmPath
     ],
     'componentize-py componentize',
-    buildDir
+    resolvedBuildDir
   );
 
   if (!compileResult.success) {

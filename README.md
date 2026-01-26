@@ -2,6 +2,10 @@
 
 **Universal Modules** — Write once, import anywhere.
 
+<p align="center">
+  <img src="docs/umo.gif" alt="umo demo" width="800">
+</p>
+
 umo compiles packages from any language into universal WebAssembly modules that can be imported natively by any other language. No FFI, no IPC, no hassle.
 
 ```

@@ -256,13 +256,24 @@ function generateModuleDeclarations(module: PipModule, exportedFunctions: Set<st
 }
 
 /**
+ * Check if a module is a main (top-level) module, not a submodule
+ * For WASM compatibility, we only process main modules
+ */
+function isMainModule(module: PipModule): boolean {
+  return !module.name.includes('.');
+}
+
+/**
  * Generate re-export statements for resource classes from jco bindings
  */
 function generateResourceClassReExports(schema: PipTypeSchema): string | null {
   const resourceClasses: string[] = [];
   let interfaceFilePath: string | null = null;
 
-  for (const module of schema.modules) {
+  // For WASM compatibility, only process main modules
+  const mainModules = schema.modules.filter(isMainModule);
+
+  for (const module of mainModules) {
     if (hasExportableClasses(module)) {
       // Compute the jco interface file path
       // Pattern: pip-{package}-{module-name-kebab}-api
@@ -318,8 +329,11 @@ export function isInitialized(): boolean;`);
   // Track exported function names to avoid duplicates (same function in multiple modules)
   const exportedFunctions = new Set<string>();
 
-  // Generate declarations for each module
-  for (const module of schema.modules) {
+  // For WASM compatibility, only process main modules (no submodules)
+  const mainModules = schema.modules.filter(isMainModule);
+
+  // Generate declarations for each main module
+  for (const module of mainModules) {
     if (module.functions.length === 0) {
       continue;
     }

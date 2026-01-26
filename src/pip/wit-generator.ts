@@ -400,20 +400,40 @@ function hasExportableContent(module: PipModule): boolean {
 }
 
 /**
+ * Check if a module is a main (top-level) module, not a submodule
+ * For WASM compatibility, we only process main modules
+ */
+function isMainModule(module: PipModule): boolean {
+  return !module.name.includes('.');
+}
+
+/**
+ * Get the WIT world name for a package
+ * Uses 'umo-' prefix to avoid conflicts with the actual Python package name
+ */
+export function getWitWorldName(packageName: string): string {
+  return `umo-${toKebabCase(packageName)}`;
+}
+
+/**
  * Generate the complete WIT file for a pip package
  */
 function generateWITContent(schema: PipTypeSchema): string {
   const packageName = toKebabCase(schema.package);
+  // Use prefixed world name to avoid conflicts with actual Python package
+  const worldName = getWitWorldName(schema.package);
 
-  // Generate interfaces for each module with exportable content
-  const interfaces = schema.modules
-    .filter(hasExportableContent)
+  // For WASM compatibility, only process main modules (no submodules)
+  // Submodule imports don't work in componentize-py's WASM environment
+  const mainModules = schema.modules.filter(m => isMainModule(m) && hasExportableContent(m));
+
+  // Generate interfaces for each main module with exportable content
+  const interfaces = mainModules
     .map(generateWITInterface)
     .join('\n\n');
 
   // Generate world with all exports
-  const exports = schema.modules
-    .filter(hasExportableContent)
+  const exports = mainModules
     .map(m => `  export ${toKebabCase(m.name.replace(/\./g, '-'))}-api;`)
     .join('\n');
 
@@ -424,7 +444,7 @@ package pip:${packageName}@0.1.0;
 
 ${interfaces}
 
-world ${packageName} {
+world ${worldName} {
 ${exports}
 }
 `;
