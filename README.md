@@ -1,12 +1,13 @@
 # umo
 
 **Universal Modules** — Write once, import anywhere.
+(A Claude Experiment)
 
 <p align="center">
   <img src="docs/umo.gif" alt="umo demo" width="800">
 </p>
 
-umo compiles packages from any language into universal WebAssembly modules that can be imported natively by any other language. No FFI, no IPC, no hassle.
+umo compiles packages from any language into universal WebAssembly modules that can be imported natively by any other language.
 
 ```
 Python package  ──┐
@@ -18,14 +19,7 @@ npm package    ───┘
 
 ## Why umo?
 
-Modern applications are polyglot. Your team uses Python for ML, TypeScript for the frontend, Go for infrastructure. But sharing code between them? That means:
-
-- Rewriting the same logic in multiple languages
-- Maintaining REST/gRPC services just to share functions
-- Dealing with serialization overhead and network latency
-- Managing separate deployments for each service
-
-**umo eliminates this friction.** Compile a Python package once, import it directly in Node.js with full type safety. No servers, no serialization — just function calls.
+Each programming language ecosystem has many useful libraries. Umo makes them available to every language.
 
 ## Quick Start
 
@@ -106,12 +100,6 @@ umo pip-install humanize
 
 # Install specific version
 umo pip-install humanize@4.15.0
-
-# Force reinstall
-umo pip-install humanize --force
-
-# Skip strict type validation
-umo pip-install humanize --skip-validation
 ```
 
 **Output:** Creates `umo_modules/<package>/` with:
@@ -162,7 +150,7 @@ umo pip-list
 └─────────────────┘
 ```
 
-**The magic:** umo uses the [WebAssembly Component Model](https://component-model.bytecodealliance.org/) to create portable, typed interfaces between languages. Functions calls cross the language boundary with native performance — no JSON serialization, no HTTP overhead.
+**Implementation:** umo uses the [WebAssembly Component Model](https://component-model.bytecodealliance.org/) to create portable, typed interfaces between languages. Functions calls cross the language boundary with native performance — no JSON serialization, no HTTP overhead.
 
 ## Supported Languages
 
@@ -307,7 +295,7 @@ umo has been tested with 30+ Python packages across different categories. Here's
 - **File I/O:** Limited filesystem access in WASM sandbox
 - **Networking:** No direct network access from WASM
 
-### Coming Soon
+### Coming Later
 
 - [ ] Go module compilation
 - [ ] TypeScript/npm package compilation
@@ -361,23 +349,8 @@ A: Python modules include the CPython runtime (~30-50MB). This is cached and sha
 **Q: Is it fast?**
 A: Function calls have near-native overhead. The WASM boundary is much faster than HTTP/IPC. First load has a startup cost; subsequent calls are fast.
 
-**Q: Can I use this in the browser?**
-A: Not yet, but it's on the roadmap. The same WASM modules will work in Node.js and browsers.
-
 **Q: What about async/await?**
 A: Async functions are supported in the Python source. The JS bindings are synchronous for now.
-
-## Contributing
-
-Contributions welcome! Areas we need help:
-
-- Adding new source languages (Go, Rust)
-- Adding new target languages (Python, Go)
-- Testing and adding curated packages
-- Documentation and examples
-- Performance optimization
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
